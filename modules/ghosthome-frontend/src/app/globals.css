@@ -1,0 +1,188 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800;0,9..40,900;1,9..40,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  /* Core backgrounds */
+  --color-bg: #0A0A0F;
+  --color-card: #13131A;
+  --color-card-hover: #1A1A24;
+  --color-border: #1E1E2E;
+
+  /* Accent palette */
+  --color-accent: #00FF88;
+  --color-accent-dim: rgba(0, 255, 136, 0.08);
+  --color-accent-border: rgba(0, 255, 136, 0.25);
+
+  /* Typography */
+  --color-text-primary: #E0E0E0;
+  --color-text-secondary: #6B7280;
+  --color-text-muted: #4B5563;
+
+  /* Status colors */
+  --color-error: #EF4444;
+  --color-warning: #F97316;
+  --color-info: #3B82F6;
+  --color-success: #22C55E;
+
+  /* Font family */
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+
+  /* Z-index scale */
+  --z-sidebar: 40;
+  --z-topbar: 30;
+  --z-modal: 50;
+  --z-tooltip: 60;
+}
+
+/* ── Base reset ──────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background-color: #0A0A0F;
+  color: #E0E0E0;
+  font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* ── Custom thin dark scrollbar ─────────────────────────────── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0A0A0F;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1E1E2E;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 136, 0.25);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1E1E2E #0A0A0F;
+}
+
+/* ── Focus ring ──────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid rgba(0, 255, 136, 0.6);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Keyframes ───────────────────────────────────────────────── */
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(0, 255, 136, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(0, 255, 136, 0.35);
+  }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes progress-indeterminate {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(150%); }
+  100% { transform: translateX(300%); }
+}
+
+/* ── Animation utilities ─────────────────────────────────────── */
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.25s ease-out forwards;
+}
+
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    #13131A 25%,
+    #1A1A24 50%,
+    #13131A 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 2.5s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
+}
+
+/* ── Reduced motion ──────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Selection highlight ─────────────────────────────────────── */
+::selection {
+  background: rgba(0, 255, 136, 0.2);
+  color: #E0E0E0;
+}

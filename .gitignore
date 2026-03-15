@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Next.js
+modules/ghosthome-frontend/.next/
+modules/ghosthome-frontend/out/
+
+# Build output
+dist/
+build/
+
+# OS artifacts
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Adversarial build review artifacts (intermediate files only)
+PLAN-REVIEW.md
+BUILD-REVIEW.md
+
+# Claude Code local config
+.claude/
+
+# Playwright
+.playwright-mcp/

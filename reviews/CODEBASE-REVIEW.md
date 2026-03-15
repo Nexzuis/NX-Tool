@@ -1,0 +1,45 @@
+Ghosthome Monitor has solid module boundaries and generally consistent workflow structure, but there are several high-risk gaps: API auth behavior is both insecure-by-default and spec-breaking when enabled, server-recovery flows can overlap in ways that can trigger conflicting restart logic, and multiple backend/frontend contract mismatches are causing missing or misleading operator data. The most urgent fixes are around auth middleware scope, server-failure concurrency control, and event-contract alignment (`MASS_OFFLINE` family, workflow summary fields). I also found important time/date correctness issues in reporting and a few frontend defaults that silently break live functionality unless env vars are set correctly.
+
+**CRITICAL**
+- API auth is open-by-default for all write actions when `API_AUTH_TOKEN` is unset (`PATCH/POST` routes are publicly callable).  
+  [api-server.js:42](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/api-server.js:42), [api-server.js:44](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/api-server.js:44)
+- Auth middleware is mounted on all `/api` routes, so enabling `API_AUTH_TOKEN` blocks read endpoints too (contradicts spec “write-only auth” and breaks current frontend reads).  
+  [api-server.js:425](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/api-server.js:425)
+- Server recovery can run concurrently via separate paths (`runHealthCheck` and `handleServerFailure`) with no shared lock, which can cause overlapping restart/recovery sequences and inconsistent incident state.  
+  [wf04-server-health.js:25](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf04-server-health.js:25), [wf04-server-health.js:142](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf04-server-health.js:142), [wf04-server-health.js:226](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf04-server-health.js:226), [wf01-websocket.js:57](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf01-websocket.js:57)
+
+**IMPORTANT**
+- Spec mismatch: WebSocket API does not forward `MASS_OFFLINE`/`MASS_OFFLINE_CLEARED` as documented; additionally, `MASS_OFFLINE_CLEARED` is never emitted on the bus.  
+  [api-server.js:24](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/api-server.js:24), [wf02-camera-offline.js:157](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf02-camera-offline.js:157)
+- Fallback alarm dedupe in WF-01 effectively suppresses repeat offline alarms forever for the same device (set never pruned at small fleet sizes).  
+  [wf01-websocket.js:183](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf01-websocket.js:183), [wf01-websocket.js:206](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf01-websocket.js:206)
+- WF-02 leaves incidents stuck in `waiting` on verification exceptions (`catch` returns without clearing/updating incident), which blocks reprocessing.  
+  [wf02-camera-offline.js:53](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf02-camera-offline.js:53), [wf02-camera-offline.js:89](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf02-camera-offline.js:89)
+- WF-03 can emit `ANALYTICS_RECOVERED` without detection verification during quiet-time windows (condition B skipped, condition C confirms pending recovery).  
+  [wf03-analytics.js:251](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf03-analytics.js:251), [wf03-analytics.js:309](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf03-analytics.js:309)
+- Daily report date bucketing uses UTC (`toISOString`) instead of SAST, so “today/yesterday” log analysis can be wrong around midnight local time.  
+  [wf05-daily-report.js:22](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf05-daily-report.js:22), [wf05-daily-report.js:28](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf05-daily-report.js:28)
+- Daily report “today analytics restarts” counts `ANALYTICS_HEALED`, but WF-03 currently logs `ANALYTICS_REENABLED`, so this metric is wrong.  
+  [wf05-daily-report.js:251](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf05-daily-report.js:251), [wf03-analytics.js:133](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf03-analytics.js:133)
+- Frontend default WebSocket URL points to current page host/port, not backend `4301`; live features silently fail unless `NEXT_PUBLIC_WS_URL` is set.  
+  [use-websocket.ts:8](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/hooks/use-websocket.ts:8)
+- Frontend write actions do not support auth headers, so once API auth is enabled, manual triggers/analytics controls fail.  
+  [api.ts:114](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/lib/api.ts:114), [api.ts:140](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/lib/api.ts:140), [api.ts:151](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/lib/api.ts:151)
+- CORS allowed headers omit `X-API-Key`, despite backend claiming support for that auth header.  
+  [api-server.js:418](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/api-server.js:418)
+- Frontend workflow cards are out of contract with backend summary fields (e.g., UI expects `eventsReceived`, backend sends `eventCount`), causing missing/misleading telemetry.  
+  [wf01-websocket.js:26](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/wf01-websocket.js:26), [workflows/page.tsx:30](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/workflows/page.tsx:30), [workflows/page.tsx:665](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/workflows/page.tsx:665)
+- Settings page shows hardcoded runtime values (NX host, intervals, daily report time) that conflict with actual configurable backend behavior and spec (morning/evening reports).  
+  [settings/page.tsx:195](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/settings/page.tsx:195), [settings/page.tsx:99](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/settings/page.tsx:99), [settings/page.tsx:303](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/settings/page.tsx:303)
+
+**MINOR**
+- Type safety violations via unsafe casts (`as Record<string,string>`, broad object casts) undermine strict-mode guarantees.  
+  [cameras/page.tsx:255](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/cameras/page.tsx:255), [incidents/page.tsx:589](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/incidents/page.tsx:589), [workflows/page.tsx:80](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/workflows/page.tsx:80)
+- Multiple long-lived maps have no eviction strategy; small now, but structurally unbounded (`state` analytics maps, Telegram cooldown map).  
+  [state.js:7](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/state.js:7), [state.js:97](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/state.js:97), [telegram.js:364](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-monitor/telegram.js:364)
+- `TriggerButton` timeout is not cleaned up on unmount, risking stale state updates.  
+  [workflows/page.tsx:156](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/workflows/page.tsx:156)
+- Incident empty-state messaging can be misleading when a filter yields zero results (shows “All Systems Operational” even if incidents exist in other statuses).  
+  [incidents/page.tsx:732](C:/Users/Nexzuis/Desktop/NX%20Wintess%20Agents%20and%20Front%20end/modules/ghosthome-frontend/src/app/incidents/page.tsx:732)
+
+Assumptions: this review is static (no runtime execution/tests). Highest residual risk is in concurrency paths (`WF-01`/`WF-04`) and auth behavior when moving from local to secured environments.
