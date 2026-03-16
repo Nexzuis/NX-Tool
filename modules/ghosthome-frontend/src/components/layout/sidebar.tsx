@@ -4,6 +4,7 @@ import { clsx } from 'clsx';
 import {
   Activity,
   AlertTriangle,
+  Bot,
   Camera,
   ChevronLeft,
   ChevronRight,
@@ -26,6 +27,7 @@ const navItems: NavItem[] = [
   { href: '/workflows',  label: 'Workflows',  icon: Activity },
   { href: '/cameras',    label: 'Cameras',    icon: Camera },
   { href: '/incidents',  label: 'Incidents',  icon: AlertTriangle },
+  { href: '/assistant',  label: 'Assistant',  icon: Bot },
   { href: '/settings',   label: 'Settings',   icon: Settings },
 ];
 

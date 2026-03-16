@@ -40,6 +40,10 @@ const BUS_EVENTS = [
   'ANALYTICS_RESTART_SUCCESS',
   'ANALYTICS_RESTART_FAILED',
   'ANALYTICS_RECOVERED',
+  'AI_QUERY',
+  'AI_RESPONSE',
+  'AI_TOOL_CALL',
+  'AI_ERROR',
 ];
 
 // ---------------------------------------------------------------------------
@@ -312,6 +316,154 @@ function buildRouter(deps) {
     if (deps.wf03 && deps.wf03.resetAllFailureCounts) deps.wf03.resetAllFailureCounts();
     return ok(res, { cleared: count });
   });
+
+  // ── AI Agent routes ─────────────────────────────────────────────────────
+
+  // [CODEX-03] AI chat routes: use standard auth + verify AI is configured.
+  // When API_AUTH_TOKEN is set, it's enforced. When unset, dev mode (open) applies
+  // — same as existing write endpoints. The AI key itself protects against abuse
+  // (no key = no Anthropic API calls).
+  function requireAiChatAuth(req, res, next) {
+    // Standard auth check (allows open dev mode when API_AUTH_TOKEN is unset)
+    const token = deps.config.apiAuthToken;
+    if (token) {
+      const bearer = req.get('authorization')?.replace(/^Bearer\s+/i, '');
+      const apiKey = req.get('x-api-key');
+      if (bearer !== token && apiKey !== token) {
+        return fail(res, 401, 'Unauthorized');
+      }
+    }
+
+    // Then check AI is configured (with crash protection for corrupted config)
+    let cfg;
+    try {
+      const aiConfigMod = require('./ai-config');
+      cfg = aiConfigMod.load();
+    } catch (err) {
+      return fail(res, 503, 'AI configuration could not be loaded: ' + err.message);
+    }
+    if (!cfg.apiKey) return fail(res, 503, 'AI assistant not configured. Add API key in Settings > AI Assistant.');
+    if (!cfg.enabled) return fail(res, 503, 'AI assistant is disabled. Enable it in Settings > AI Assistant.');
+
+    next();
+  }
+
+  // requireAiConfigAuth: uses same auth as write endpoints (allows initial setup)
+  // This allows reading/updating AI config even before AI key is set
+  function requireAiConfigAuth(req, res, next) {
+    return requireApiAuth(req, res, next);
+  }
+
+  // POST /api/chat — SSE streaming AI chat [FIX-02]
+  router.post('/chat', requireAiChatAuth, writeLimiter, asyncHandler(async (req, res) => {
+    if (!deps.aiAgent) return fail(res, 503, 'AI agent not initialized');
+
+    const { message, sessionId } = req.body;
+    if (!message || !sessionId) return fail(res, 400, 'message and sessionId required');
+
+    // Set SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    // [CODEX-07] Heartbeat every 15s to keep connection alive
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) res.write(': heartbeat\n\n');
+    }, 15000);
+
+    const abortController = new AbortController();
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      abortController.abort();
+    });
+
+    try {
+      await deps.aiAgent.chatStream(message, {
+        source: 'web',
+        chatId: sessionId,
+        signal: abortController.signal,
+      }, (event) => {
+        if (abortController.signal.aborted || res.writableEnded) return;
+        res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      });
+    } catch (err) {
+      if (!res.writableEnded) {
+        res.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
+      }
+    } finally {
+      clearInterval(heartbeat);
+      if (!res.writableEnded) res.end();
+    }
+  }));
+
+  // GET /api/chat/history/:sessionId — get conversation history
+  router.get('/chat/history/:sessionId', requireAiChatAuth, readExpensiveLimiter, asyncHandler(async (req, res) => {
+    if (!deps.aiAgent) return fail(res, 503, 'AI agent not initialized');
+    const messages = deps.aiAgent.getConversationForClient(req.params.sessionId);
+    return ok(res, messages);
+  }));
+
+  // DELETE /api/chat/history/:sessionId — clear conversation
+  router.delete('/chat/history/:sessionId', requireAiChatAuth, writeLimiter, asyncHandler(async (req, res) => {
+    if (!deps.aiAgent) return fail(res, 503, 'AI agent not initialized');
+    deps.aiAgent.clearConversation(req.params.sessionId);
+    return ok(res, { cleared: true });
+  }));
+
+  // GET /api/ai-config — get AI config (key redacted) [FIX-13b]
+  router.get('/ai-config', requireAiConfigAuth, readExpensiveLimiter, (_req, res) => {
+    const aiConfigMod = require('./ai-config');
+    const config = aiConfigMod.load();
+    return ok(res, aiConfigMod.redactForClient(config));
+  });
+
+  // PATCH /api/ai-config — update AI config
+  router.patch('/ai-config', requireAiConfigAuth, writeLimiter, asyncHandler(async (req, res) => {
+    const aiConfigMod = require('./ai-config');
+    const current = aiConfigMod.load();
+    const updates = req.body;
+
+    // Merge updates into current config
+    if (typeof updates.enabled === 'boolean') current.enabled = updates.enabled;
+    if (typeof updates.apiKey === 'string') current.apiKey = updates.apiKey;
+    if (updates.model) current.model = updates.model;
+    if (typeof updates.maxQueriesPerHour === 'number') current.maxQueriesPerHour = updates.maxQueriesPerHour;
+    if (typeof updates.monthlyBudgetCap === 'number') current.monthlyBudgetCap = updates.monthlyBudgetCap;
+    if (updates.capabilities) current.capabilities = { ...current.capabilities, ...updates.capabilities };
+    if (typeof updates.systemPromptOverride === 'string') current.systemPromptOverride = updates.systemPromptOverride || null;
+    if (updates.telegram) current.telegram = { ...current.telegram, ...updates.telegram };
+    if (updates.web) current.web = { ...current.web, ...updates.web };
+
+    aiConfigMod.save(current);
+    return ok(res, aiConfigMod.redactForClient(current));
+  }));
+
+  // POST /api/ai-config/validate-key — test API key validity
+  router.post('/ai-config/validate-key', requireAiConfigAuth, writeLimiter, asyncHandler(async (req, res) => {
+    const { apiKey } = req.body;
+    if (!apiKey) return fail(res, 400, 'apiKey required');
+
+    try {
+      const Anthropic = require('@anthropic-ai/sdk');
+      const client = new Anthropic({ apiKey });
+      // Make a minimal API call to validate the key
+      await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'test' }],
+      });
+      return ok(res, { valid: true });
+    } catch (err) {
+      const isAuthError = err.status === 401 || err.message?.includes('authentication');
+      return ok(res, {
+        valid: false,
+        error: isAuthError ? 'Invalid API key' : err.message,
+      });
+    }
+  }));
 
   // ── Analytics management ────────────────────────────────────────────────
 

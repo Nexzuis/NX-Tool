@@ -26,10 +26,14 @@ import {
   unsuppressCamera,
   unsuppressAll,
   formatUptime,
+  fetchAIConfig,
+  updateAIConfig,
+  validateAIKey,
   type ServerHealth,
   type AuthStatus,
   type RuntimeConfig,
   type SuppressedCamera,
+  type AIConfig,
 } from '@/lib/api';
 import { StatusDot } from '@/components/ui/status-dot';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -54,7 +58,74 @@ const sectionVariants = {
   },
 } as const;
 
+// ── AI Tool name constants ───────────────────────────────────────────────────
+
+const ALL_READ_TOOLS = [
+  'list_cameras', 'get_camera_details', 'get_event_rules',
+  'get_server_health', 'get_server_info',
+  'get_analytics_status', 'get_analytics_engines',
+  'search_event_log', 'search_workflow_logs',
+  'get_active_incidents', 'get_recording_status',
+  'get_storage_info',
+  'get_users',
+  'get_bookmarks', 'get_layouts', 'get_site_info',
+  'get_licenses',
+  'get_suppressed_cameras', 'get_workflow_status',
+  'get_infrastructure_summary', 'get_user_cameras',
+];
+
+const ALL_DEVICE_TOOLS = [
+  'restart_analytics', 'toggle_analytics', 'unsuppress_camera',
+  'modify_camera_settings',
+  'create_event_rule', 'modify_event_rule', 'delete_event_rule',
+  'create_bookmark', 'fire_trigger', 'acknowledge_event',
+  'trigger_analytics_cycle', 'trigger_health_check', 'trigger_daily_report',
+];
+
+const ALL_SERVER_TOOLS = [
+  'restart_server',
+  'create_user', 'modify_user', 'delete_user',
+  'assign_user_cameras', 'sync_cloud_users',
+  'create_db_backup',
+  'modify_site_settings', 'modify_analytics_engine_settings',
+];
+
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+function CapToggle({ name, enabled, onToggle, saving }: {
+  name: string;
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+  saving: boolean;
+}) {
+  const label = name.replace(/_/g, ' ').replace(/^get /, '');
+  return (
+    <button
+      onClick={() => onToggle(!enabled)}
+      disabled={saving}
+      className={clsx(
+        'flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors duration-150',
+        enabled
+          ? 'border-[rgba(0,255,136,0.25)] bg-[rgba(0,255,136,0.05)] text-[#E0E0E0]'
+          : 'border-[#1E1E2E] bg-[#0A0A0F] text-[#4B5563]',
+        'disabled:opacity-50 hover:border-[rgba(0,255,136,0.3)]',
+      )}
+    >
+      <span className={clsx(
+        'flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-sm border',
+        enabled ? 'border-[#00FF88] bg-[#00FF88]' : 'border-[#4B5563]',
+      )}>
+        {enabled && (
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+            <path d="M1.5 4L3 5.5L6.5 2" stroke="#0A0A0F" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+      </span>
+      <span className="text-[11px] font-medium truncate">{label}</span>
+    </button>
+  );
+}
+
 
 interface SectionCardProps {
   title: string;
@@ -169,6 +240,14 @@ export default function SettingsPage() {
   const [suppressedError, setSuppressedError] = useState(false);
   const [unsuppressError, setUnsuppressError] = useState<string | null>(null);
 
+  // AI config state
+  const [aiConfig, setAiConfig] = useState<AIConfig | null>(null);
+  const [aiLoading, setAiLoading] = useState(true);
+  const [aiKeyInput, setAiKeyInput] = useState('');
+  const [aiKeyValidating, setAiKeyValidating] = useState(false);
+  const [aiKeyResult, setAiKeyResult] = useState<{ valid: boolean; error?: string } | null>(null);
+  const [aiSaving, setAiSaving] = useState(false);
+
   const loadSuppressed = useCallback(() => {
     setSuppressedLoading(true);
     setSuppressedError(false);
@@ -202,6 +281,11 @@ export default function SettingsPage() {
       .finally(() => setConfigLoading(false));
 
     loadSuppressed();
+
+    fetchAIConfig()
+      .then(setAiConfig)
+      .catch(() => setAiConfig(null))
+      .finally(() => setAiLoading(false));
   }, [loadSuppressed]);
 
   async function testConnection() {
@@ -833,7 +917,269 @@ export default function SettingsPage() {
         </SectionCard>
       </div>
 
-      {/* ── Section 9: About (full width) ───────────────────── */}
+      {/* ── Section 9: AI Assistant ───────────────────────────── */}
+      <SectionCard
+        title="AI Assistant"
+        icon={<Activity size={16} aria-hidden="true" />}
+      >
+        {aiLoading ? (
+          <Skeleton rows={4} />
+        ) : aiConfig ? (
+          <div className="flex flex-col gap-4">
+            {/* Status */}
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-[#6B7280] uppercase tracking-wide">Status</span>
+              <div className="flex items-center gap-2">
+                <StatusDot status={aiConfig.enabled && aiConfig.apiKeyRedacted ? 'online' : 'unknown'} size="sm" />
+                <span className="text-sm text-[#E0E0E0]">
+                  {aiConfig.enabled && aiConfig.apiKeyRedacted ? 'Active' : 'Not configured'}
+                </span>
+              </div>
+            </div>
+
+            {/* API Key */}
+            <div>
+              <label className="text-xs font-medium text-[#6B7280] uppercase tracking-wide">API Key</label>
+              <div className="mt-1.5 flex gap-2">
+                <input
+                  type="password"
+                  value={aiKeyInput}
+                  onChange={e => { setAiKeyInput(e.target.value); setAiKeyResult(null); }}
+                  placeholder={aiConfig.apiKeyRedacted || 'sk-ant-...'}
+                  className="flex-1 rounded-lg border border-[#1E1E2E] bg-[#0A0A0F] px-3 py-2 text-sm text-[#E0E0E0] placeholder:text-[#4B5563] focus:border-[rgba(0,255,136,0.25)] focus:outline-none"
+                />
+                <button
+                  onClick={async () => {
+                    if (!aiKeyInput) return;
+                    setAiKeyValidating(true);
+                    setAiKeyResult(null);
+                    try {
+                      const result = await validateAIKey(aiKeyInput);
+                      setAiKeyResult(result);
+                      if (result.valid) {
+                        await updateAIConfig({ apiKey: aiKeyInput, enabled: true });
+                        const updated = await fetchAIConfig();
+                        setAiConfig(updated);
+                        setAiKeyInput('');
+                      }
+                    } catch { setAiKeyResult({ valid: false, error: 'Validation failed' }); }
+                    setAiKeyValidating(false);
+                  }}
+                  disabled={!aiKeyInput || aiKeyValidating}
+                  className="rounded-lg border border-[#1E1E2E] bg-[#1A1A24] px-3 py-2 text-xs font-medium text-[#6B7280] hover:text-[#E0E0E0] hover:border-[rgba(0,255,136,0.25)] disabled:opacity-50 transition-colors"
+                >
+                  {aiKeyValidating ? 'Validating...' : 'Save Key'}
+                </button>
+              </div>
+              {aiKeyResult && (
+                <p className={clsx('mt-1 text-xs', aiKeyResult.valid ? 'text-[#22C55E]' : 'text-[#EF4444]')}>
+                  {aiKeyResult.valid ? 'Key validated and saved' : aiKeyResult.error || 'Invalid key'}
+                </p>
+              )}
+            </div>
+
+            {/* Model */}
+            <div>
+              <label className="text-xs font-medium text-[#6B7280] uppercase tracking-wide">Model</label>
+              <select
+                value={aiConfig.model}
+                onChange={async (e) => {
+                  setAiSaving(true);
+                  try {
+                    const updated = await updateAIConfig({ model: e.target.value });
+                    setAiConfig(updated);
+                  } catch { /* ignore */ }
+                  setAiSaving(false);
+                }}
+                className="mt-1.5 w-full rounded-lg border border-[#1E1E2E] bg-[#0A0A0F] px-3 py-2 text-sm text-[#E0E0E0] focus:border-[rgba(0,255,136,0.25)] focus:outline-none"
+              >
+                <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fastest, cheapest)</option>
+                <option value="claude-sonnet-4-6-20250514">Claude Sonnet 4.6 (balanced)</option>
+                <option value="claude-opus-4-6-20250514">Claude Opus 4.6 (most capable)</option>
+              </select>
+            </div>
+
+            {/* Budget */}
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-[#6B7280] uppercase tracking-wide">Monthly Spend</span>
+              <span className="text-sm font-mono text-[#E0E0E0]">
+                ${(aiConfig.estimatedMonthlySpend || 0).toFixed(2)} / ${(aiConfig.monthlyBudgetCap || 50).toFixed(2)}
+              </span>
+            </div>
+
+            {/* System Prompt Override */}
+            <div>
+              <label className="text-xs font-medium text-[#6B7280] uppercase tracking-wide">Custom System Prompt</label>
+              <p className="text-[10px] text-[#4B5563] mt-0.5 mb-1.5">Additional instructions appended to the default prompt. Core safety rules cannot be overridden.</p>
+              <textarea
+                value={aiConfig.systemPromptOverride || ''}
+                onChange={(e) => {
+                  setAiConfig({ ...aiConfig, systemPromptOverride: e.target.value });
+                }}
+                onBlur={async (e) => {
+                  const val = e.target.value.trim();
+                  setAiSaving(true);
+                  try {
+                    const updated = await updateAIConfig({ systemPromptOverride: val });
+                    setAiConfig(updated);
+                  } catch { /* ignore */ }
+                  setAiSaving(false);
+                }}
+                rows={3}
+                placeholder="Default system prompt is used when empty..."
+                className="w-full rounded-lg border border-[#1E1E2E] bg-[#0A0A0F] px-3 py-2 text-xs text-[#E0E0E0] placeholder:text-[#4B5563] focus:border-[rgba(0,255,136,0.25)] focus:outline-none resize-y"
+              />
+            </div>
+
+            {/* Enable/Disable toggle */}
+            <div className="flex items-center justify-between pt-2 border-t border-[#1E1E2E]">
+              <span className="text-xs font-medium text-[#6B7280]">AI Enabled</span>
+              <button
+                onClick={async () => {
+                  setAiSaving(true);
+                  try {
+                    const updated = await updateAIConfig({ enabled: !aiConfig.enabled });
+                    setAiConfig(updated);
+                  } catch { /* ignore */ }
+                  setAiSaving(false);
+                }}
+                disabled={aiSaving}
+                className={clsx(
+                  'relative h-6 w-11 rounded-full transition-colors duration-200',
+                  aiConfig.enabled ? 'bg-[#00FF88]/20 border border-[#00FF88]/40' : 'bg-[#1E1E2E] border border-[#2D2D3E]',
+                )}
+              >
+                <span className={clsx(
+                  'absolute top-0.5 h-5 w-5 rounded-full transition-transform duration-200',
+                  aiConfig.enabled ? 'translate-x-5 bg-[#00FF88]' : 'translate-x-0.5 bg-[#4B5563]',
+                )} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-[#4B5563]">
+            AI configuration unavailable. Backend may not support the AI agent yet.
+          </p>
+        )}
+      </SectionCard>
+
+      {/* ── Section 10: AI Capabilities ──────────────────────── */}
+      {aiConfig && !aiLoading && (
+        <SectionCard
+          title="AI Capabilities"
+          icon={<Shield size={16} aria-hidden="true" />}
+          className="lg:col-span-2"
+        >
+          <div className="flex flex-col gap-5">
+            {/* Preset buttons */}
+            <div className="flex gap-2">
+              {[
+                { label: 'Read Only', desc: 'Safe queries only', apply: () => ({ read: ALL_READ_TOOLS, device_management: [], server_admin: [] }) },
+                { label: 'Standard', desc: 'Read + device mgmt', apply: () => ({ read: ALL_READ_TOOLS, device_management: ALL_DEVICE_TOOLS, server_admin: [] }) },
+                { label: 'Full Admin', desc: 'Everything enabled', apply: () => ({ read: ALL_READ_TOOLS, device_management: ALL_DEVICE_TOOLS, server_admin: ALL_SERVER_TOOLS }) },
+              ].map(preset => (
+                <button
+                  key={preset.label}
+                  onClick={async () => {
+                    setAiSaving(true);
+                    try {
+                      const caps = preset.apply();
+                      const updated = await updateAIConfig({ capabilities: caps });
+                      setAiConfig(updated);
+                    } catch { /* ignore */ }
+                    setAiSaving(false);
+                  }}
+                  disabled={aiSaving}
+                  className="flex-1 rounded-lg border border-[#1E1E2E] bg-[#0A0A0F] px-3 py-2 text-center hover:border-[rgba(0,255,136,0.25)] transition-colors disabled:opacity-50"
+                >
+                  <span className="block text-xs font-medium text-[#E0E0E0]">{preset.label}</span>
+                  <span className="block text-[10px] text-[#4B5563] mt-0.5">{preset.desc}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Read-Only tools */}
+            <div>
+              <h3 className="text-xs font-medium text-[#22C55E] uppercase tracking-wide mb-2">Read-Only (Safe)</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                {ALL_READ_TOOLS.map(tool => (
+                  <CapToggle
+                    key={tool}
+                    name={tool}
+                    enabled={(aiConfig.capabilities?.read ?? []).includes(tool)}
+                    onToggle={async (enabled) => {
+                      const newRead = enabled
+                        ? [...(aiConfig.capabilities?.read ?? []), tool]
+                        : (aiConfig.capabilities?.read ?? []).filter((t: string) => t !== tool);
+                      setAiSaving(true);
+                      try {
+                        const updated = await updateAIConfig({ capabilities: { ...aiConfig.capabilities, read: newRead } });
+                        setAiConfig(updated);
+                      } catch { /* ignore */ }
+                      setAiSaving(false);
+                    }}
+                    saving={aiSaving}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Device Management tools */}
+            <div>
+              <h3 className="text-xs font-medium text-[#F97316] uppercase tracking-wide mb-2">Device Management (Moderate)</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                {ALL_DEVICE_TOOLS.map(tool => (
+                  <CapToggle
+                    key={tool}
+                    name={tool}
+                    enabled={(aiConfig.capabilities?.device_management ?? []).includes(tool)}
+                    onToggle={async (enabled) => {
+                      const newDm = enabled
+                        ? [...(aiConfig.capabilities?.device_management ?? []), tool]
+                        : (aiConfig.capabilities?.device_management ?? []).filter((t: string) => t !== tool);
+                      setAiSaving(true);
+                      try {
+                        const updated = await updateAIConfig({ capabilities: { ...aiConfig.capabilities, device_management: newDm } });
+                        setAiConfig(updated);
+                      } catch { /* ignore */ }
+                      setAiSaving(false);
+                    }}
+                    saving={aiSaving}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Server Admin tools */}
+            <div>
+              <h3 className="text-xs font-medium text-[#EF4444] uppercase tracking-wide mb-2">Server Administration (Critical)</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                {ALL_SERVER_TOOLS.map(tool => (
+                  <CapToggle
+                    key={tool}
+                    name={tool}
+                    enabled={(aiConfig.capabilities?.server_admin ?? []).includes(tool)}
+                    onToggle={async (enabled) => {
+                      const newSa = enabled
+                        ? [...(aiConfig.capabilities?.server_admin ?? []), tool]
+                        : (aiConfig.capabilities?.server_admin ?? []).filter((t: string) => t !== tool);
+                      setAiSaving(true);
+                      try {
+                        const updated = await updateAIConfig({ capabilities: { ...aiConfig.capabilities, server_admin: newSa } });
+                        setAiConfig(updated);
+                      } catch { /* ignore */ }
+                      setAiSaving(false);
+                    }}
+                    saving={aiSaving}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </SectionCard>
+      )}
+
+      {/* ── Section 11: About (full width) ───────────────────── */}
       <SectionCard
         title="About"
         icon={<Info size={16} aria-hidden="true" />}

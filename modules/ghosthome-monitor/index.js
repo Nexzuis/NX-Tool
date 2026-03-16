@@ -11,6 +11,8 @@ const wf04 = require('./wf04-server-health');
 const wf05 = require('./wf05-daily-report');
 const { startApiServer } = require('./api-server');
 const telegram = require('./telegram');
+const aiAgent = require('./llm-agent');
+const aiConfig = require('./ai-config');
 
 const WF = 'SYSTEM';
 const eventBus = new EventEmitter();
@@ -30,6 +32,8 @@ const deps = {
   wf04,
   wf05,
   telegram,
+  aiAgent,
+  aiConfig,
 };
 
 async function startup() {
@@ -114,6 +118,18 @@ async function startup() {
     log(WF, 'RECONCILIATION_SKIPPED', { detail: { reason: err.message } });
   }
 
+  // [NX-10] Detect NX Witness version
+  try {
+    const nxVersion = await nxClient.detectVersion();
+    if (nxVersion) {
+      log(WF, 'NX_VERSION_DETECTED', { detail: { version: nxVersion } });
+    } else {
+      log(WF, 'NX_VERSION_UNKNOWN', { detail: { message: 'Could not detect NX Witness version' } });
+    }
+  } catch (err) {
+    log(WF, 'NX_VERSION_ERROR', { detail: { error: err.message } });
+  }
+
   // Auto-discover CVEDIA engine ID
   try {
     const engines = await nxClient.getAnalyticsEngines();
@@ -144,6 +160,16 @@ async function startup() {
 
   log(WF, 'ALL_WORKFLOWS_STARTED', {});
 
+  // Initialize AI agent
+  aiAgent.init(deps);
+  aiAgent.start();
+  const loadedAiConfig = aiConfig.load();
+  if (loadedAiConfig.apiKey && loadedAiConfig.enabled) {
+    log(WF, 'AI_AGENT_CONFIGURED', { detail: { model: loadedAiConfig.model, enabled: true } });
+  } else {
+    log(WF, 'AI_AGENT_STATUS', { detail: { enabled: false, hasKey: !!loadedAiConfig.apiKey } });
+  }
+
   // Initialize Telegram notifications + command polling
   telegram.init(deps);
   telegram.start();
@@ -165,9 +191,11 @@ async function startup() {
   console.log('');
   console.log('=== Ghosthome Infrastructure Health Monitor ===');
   console.log(`NX Witness: ${config.nx.host}`);
+  console.log(`NX Witness: ${nxClient.nxVersion || 'version unknown'}`);
   console.log(`CVEDIA Engine: ${config.nx.engineId || 'not found'}`);
   console.log(`Log directory: ${config.logDir}`);
   console.log(`Telegram: ${process.env.TELEGRAM_BOT_TOKEN ? 'configured' : 'not configured'}`);
+  console.log(`AI Agent: ${loadedAiConfig.apiKey && loadedAiConfig.enabled ? 'enabled (' + loadedAiConfig.model + ')' : 'not configured'}`);
   console.log('All 5 workflows running.');
   console.log('Press Ctrl+C to stop.');
   console.log('');
@@ -185,6 +213,7 @@ function shutdown(signal) {
   wf03.stop();
   wf04.stop();
   wf05.stop();
+  aiAgent.stop();
   telegram.stop();
 
   // Flush state to disk before closing servers

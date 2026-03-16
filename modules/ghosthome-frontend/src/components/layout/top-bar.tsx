@@ -10,6 +10,7 @@ const breadcrumbMap: Record<string, string> = {
   '/workflows': 'Workflow Monitor',
   '/cameras':   'Cameras',
   '/incidents': 'Incidents',
+  '/assistant': 'AI Assistant',
   '/settings':  'Settings',
 };
 

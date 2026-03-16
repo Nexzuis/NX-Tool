@@ -19,6 +19,7 @@ let nxClient = null;
 let state = null;
 let wf03 = null;
 let wf05 = null;
+let aiAgent = null;
 
 // Polling state
 let polling = false;
@@ -436,7 +437,16 @@ async function handleUpdate(update) {
   }
 
   const text = msg.text.trim();
-  if (!text.startsWith('/')) return;
+
+  // [FIX-01] Non-command text → route to AI agent (fire-and-forget)
+  if (!text.startsWith('/')) {
+    if (aiAgent) {
+      processAiMessage(text, msg).catch(err => {
+        log(WF, 'AI_CHAT_ERROR', { detail: { error: err.message } });
+      });
+    }
+    return;
+  }
 
   // Strip @botname suffix (for group chats)
   const command = text.split(/\s/)[0].replace(/@\S+$/, '').toLowerCase();
@@ -496,6 +506,102 @@ async function pollLoop() {
   }
 
   log(WF, 'POLLING_STOPPED', {});
+}
+
+// ── AI agent integration [FIX-01] [FIX-08] ──────────────────────────────────
+
+/**
+ * Process a non-command text message via the AI agent.
+ * Fire-and-forget — does NOT block the polling loop.
+ */
+async function processAiMessage(text, message) {
+  const msgChatId = String(message.chat.id);
+  const userId = String(message.from?.id || 'unknown');
+
+  log(WF, 'AI_MESSAGE_RECEIVED', { detail: { from: message.from?.username || userId, length: text.length } });
+
+  try {
+    const response = await aiAgent.chat(text, {
+      source: 'telegram',
+      chatId: msgChatId,
+      userId,
+    });
+
+    await sendLongMessage(msgChatId, response);
+  } catch (err) {
+    log(WF, 'AI_RESPONSE_ERROR', { detail: { error: err.message } });
+    sendMessage(`\u26a0\ufe0f AI error: ${err.message}`);
+  }
+}
+
+/**
+ * Send a long message, splitting at paragraph boundaries if > 4000 chars.
+ * [FIX-08] Telegram messages max at 4096 characters.
+ */
+async function sendLongMessage(targetChatId, text) {
+  const MAX_LEN = 4000;
+  if (!text || text.length <= MAX_LEN) {
+    return sendMessage(text, 'Markdown');
+  }
+
+  const chunks = splitTextAtBoundaries(text, MAX_LEN);
+  for (const chunk of chunks) {
+    let sent = false;
+    try {
+      const result = await callTelegramApi('sendMessage', {
+        chat_id: targetChatId,
+        text: chunk,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+      });
+      // Check if Telegram accepted it (ok: false means parse error or similar)
+      sent = result && result.ok === true;
+    } catch {
+      sent = false;
+    }
+
+    // Fallback: send without parse mode if markdown was rejected
+    if (!sent) {
+      try {
+        await callTelegramApi('sendMessage', {
+          chat_id: targetChatId,
+          text: chunk,
+          disable_web_page_preview: true,
+        });
+      } catch (fallbackErr) {
+        log(WF, 'LONG_MESSAGE_SEND_FAILED', { detail: { error: fallbackErr.message } });
+      }
+    }
+    await new Promise(r => setTimeout(r, 300)); // Avoid Telegram rate limits
+  }
+}
+
+function splitTextAtBoundaries(text, maxLen) {
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > maxLen) {
+    // Try splitting at paragraph boundary
+    let splitIdx = remaining.lastIndexOf('\n\n', maxLen);
+    if (splitIdx < maxLen * 0.3) {
+      // No good paragraph break — try newline
+      splitIdx = remaining.lastIndexOf('\n', maxLen);
+    }
+    if (splitIdx < maxLen * 0.3) {
+      // No good newline — hard cut at space
+      splitIdx = remaining.lastIndexOf(' ', maxLen);
+    }
+    if (splitIdx < maxLen * 0.3) {
+      // Last resort — hard cut
+      splitIdx = maxLen;
+    }
+
+    chunks.push(remaining.slice(0, splitIdx).trim());
+    remaining = remaining.slice(splitIdx).trim();
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks;
 }
 
 // ── Event handlers ───────────────────────────────────────────────────────────
@@ -643,6 +749,7 @@ function init(deps) {
   state = deps.state || null;
   wf03 = deps.wf03 || null;
   wf05 = deps.wf05 || null;
+  aiAgent = deps.aiAgent || null;
 
   if (!botToken || !chatId) {
     log(WF, 'DISABLED', { detail: { reason: 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set' } });

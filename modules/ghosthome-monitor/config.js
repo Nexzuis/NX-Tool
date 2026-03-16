@@ -36,6 +36,15 @@ const config = {
   quietTimeStart: 23,          // SAST hour
   quietTimeEnd: 6,             // SAST hour
   telegramConfigured: !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
+
+  // AI Agent bootstrap defaults — canonical config lives in data/ai-config.json
+  ai: {
+    enabled: (process.env.AI_AGENT_ENABLED || 'false').toLowerCase() === 'true',
+    apiKey: process.env.AI_API_KEY || '',
+    model: process.env.AI_MODEL || 'claude-haiku-4-5-20251001',
+    maxQueriesPerHour: parseInt(process.env.AI_MAX_QUERIES_PER_HOUR, 10) || 30,
+    monthlyBudgetCap: parseFloat(process.env.AI_MONTHLY_BUDGET_CAP) || 50,
+  },
 };
 
 module.exports = config;

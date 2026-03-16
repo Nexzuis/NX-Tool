@@ -6,7 +6,7 @@ Infrastructure health monitor for ~69 TP-Link VIGI cameras on NX Witness VMS. Tw
 ## Tech Stack
 - **Backend**: Node.js, Express 5, WebSocket (ws), Axios, node-cron (WF-05), CommonJS
 - **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS 4, Framer Motion
-- **External**: NX Witness REST API v4 (192.168.1.110:7001), Telegram Bot API
+- **External**: NX Witness REST API v4 (192.168.1.110:7001), Telegram Bot API, Claude API (Anthropic)
 
 ## Conventions
 
@@ -70,12 +70,15 @@ modules/ghosthome-monitor/
   wf03-analytics.js — CVEDIA-RT health checks
   wf04-server-health.js — CPU/RAM/storage monitoring
   wf05-daily-report.js — Daily summary generation
+  llm-agent.js      — AI agent core (tool loop, streaming, conversation, budget)
+  llm-tools.js      — AI tool definitions (18 read-only tools for Phase 1)
+  ai-config.js      — AI config persistence (data/ai-config.json)
 
 modules/ghosthome-frontend/
-  src/app/          — Next.js pages (dashboard, workflows, cameras, incidents, settings)
-  src/components/   — UI components (layout/, ui/, analytics-panel)
+  src/app/          — Next.js pages (dashboard, workflows, cameras, incidents, settings, assistant)
+  src/components/   — UI components (layout/, ui/, chat/)
   src/hooks/        — use-websocket.ts
-  src/lib/          — api.ts (API client + types), event-parser.ts (event formatting)
+  src/lib/          — api.ts (API client + types + SSE streaming), event-parser.ts (event formatting)
 ```
 
 ## Key Decisions
@@ -87,6 +90,32 @@ modules/ghosthome-frontend/
 - Pole host notifications rate-limited to once per 72 hours
 - Disk space alerts intentionally removed (D: drive is loop recording)
 - Backend converts CPU/RAM from 0-1 fractions to 0-100 percentages before sending
+
+### AI Agent Architecture
+- Claude API (Anthropic SDK) for reasoning — customer-owned API key stored in `data/ai-config.json`
+- Agentic tool-use loop: max 15 tool calls per query, reads parallel, writes sequential
+- SSE (Server-Sent Events) for web chat streaming — NOT the shared WebSocket
+- Telegram: non-command text messages routed to AI (fire-and-forget, non-blocking)
+- Conversation history stored in full Claude API format (tool_use + tool_result blocks preserved)
+- Turn-aware trimming: oldest complete turns removed first (never orphans tool messages)
+- Per-chatId sequential queue prevents conversation history race conditions
+- Circuit breaker: 3 consecutive Claude API failures → disable for 5 minutes
+- Monthly budget cap with estimated token spend tracking
+- NX Witness protection: NxThrottle (5 concurrent, 20/5s burst), auth mutex, 5s read cache
+
+### AI Route Auth — INTENTIONAL DESIGN DECISION (DO NOT CHANGE)
+AI chat routes (`/api/chat`, `/api/chat/history/*`) use the **same auth pattern as existing write endpoints** (`requireApiAuth`):
+- When `API_AUTH_TOKEN` is set → token is enforced
+- When `API_AUTH_TOKEN` is not set → open dev mode (same as all other write routes)
+
+This was reviewed by Codex who suggested strict "always require auth" for AI routes. We **intentionally rejected** this because:
+1. This is a **LAN-only deployment** — the API is not internet-exposed
+2. The existing system already runs all write endpoints (analytics toggles, workflow triggers) without auth in dev mode
+3. Requiring `API_AUTH_TOKEN` specifically for AI routes creates a setup barrier on a system that has never needed it
+4. The **Anthropic API key itself** is the cost protection — without it configured, AI routes return 503
+5. AI config routes (`/api/ai-config`) use `requireApiAuth` to allow initial setup before AI key exists
+
+**Do NOT add strict auth requirements to AI routes that differ from the existing write endpoint pattern.** If auth needs tightening, it should be done system-wide (by setting `API_AUTH_TOKEN`), not per-feature.
 
 ## Verified NX Witness v4 API — DO NOT CHANGE
 The following endpoints and protocols have been **live-tested against the production NX Witness server** (192.168.1.110:7001). Do not suggest alternative methods, rename these calls, or replace them with undocumented/legacy approaches.
@@ -111,6 +140,38 @@ The following endpoints and protocols have been **live-tested against the produc
 - `GET /rest/v4/analytics/engines/{id}/deviceAgents` — per-engine device agents
 - `GET /rest/v4/analytics/objectTracks` — object detection tracks
 - `GET /rest/v4/events/log` — event log
+
+### AI Agent Tier 1+2 Endpoints — Verified 2026-03-16 (NX Witness 6.1.0.42176)
+- `GET /rest/v4/site/info` — site metadata, NX version
+- `GET /rest/v4/licenses` — licensing info (0 items on this server)
+- `GET /rest/v4/users` — user accounts (163 items including system users)
+- `GET /rest/v4/userGroups` — permission groups (6 items)
+- `GET /rest/v4/layouts` — client layouts (9 items)
+- `GET /rest/v4/events/rules` — event/action rules (304 rules)
+- `GET /rest/v4/events/rules/{id}` — single rule by ID
+- `GET /rest/v4/events/triggers` — software triggers (0 configured)
+- `GET /rest/v4/devices/*/bookmarks` — all bookmarks across devices (60,575 items — MUST cap results)
+- `GET /rest/v4/devices/{deviceId}/bookmarks` — bookmarks for specific device
+- `GET /rest/v4/site/settings` — site-level settings object
+- `GET /rest/v4/servers/{id}/dbBackups` — database backups (6 items)
+- `GET /rest/v4/servers/{id}/storageForecast` — storage forecast (70 items)
+- `GET /rest/v4/devices/{deviceId}/ptz/presets` — PTZ presets (0 on non-PTZ cameras, endpoint works)
+- `GET /rest/v4/devices/{deviceId}/io` — device I/O state
+- `GET /rest/v4/analytics/engines/{id}/settings` — analytics engine settings
+
+### Write Endpoints — NOT YET LIVE-TESTED (paths verified against API reference doc)
+- `POST/PATCH/DELETE /rest/v4/events/rules/{id}` — event rule CRUD
+- `POST /rest/v4/events/triggers` — fire software trigger (body: `{triggerId, deviceId, state}`)
+- `POST /rest/v4/events/acknowledges` — acknowledge event
+- `PATCH /rest/v4/devices/{id}` — update device settings
+- `POST /rest/v4/devices/{deviceId}/bookmarks` — create bookmark
+- `POST/PATCH/DELETE /rest/v4/users/{id}` — user CRUD
+- `POST/PATCH/DELETE /rest/v4/userGroups/{id}` — user group CRUD
+- `POST/PATCH/DELETE /rest/v4/layouts/{id}` — layout CRUD
+- `PUT /rest/v4/site/settings/{name}` — update site setting (body is raw JSON value)
+- `PUT /rest/v4/analytics/engines/{id}/settings` — update analytics engine settings
+- `POST /rest/v4/servers/{id}/dbBackups` — create database backup
+- `PATCH /rest/v4/servers/{id}/storages/{storageId}` — update storage config
 
 ## Timezone
 All times displayed in Africa/Johannesburg (SAST, UTC+2).

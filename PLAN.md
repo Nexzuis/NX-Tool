@@ -96,3 +96,51 @@ Full codebase audit by Claude (2 parallel agents) + Codex (gpt-5.3-codex). Found
 > 3-agent parallel final review (backend, frontend, integration). All APPROVED for production.
 > Prior review (2026-03-14): 14/14 items verified fixed or already fixed.
 > SPEC.md, TECH-DEBT.md, PLAN.md updated. CONSOLIDATED-REVIEW.md finalized.
+
+## Phase 5 - AI Agent (2026-03-15)
+
+### 5.1 Core Agent MVP — COMPLETE
+> AI-powered remote operations assistant via Telegram and web chat.
+> Backend: llm-agent.js (agentic tool-use loop, SSE streaming, conversation management, budget tracking, circuit breaker),
+> llm-tools.js (18 read-only tools with null-safety, result capping, severity sorting, camera name ambiguity handling),
+> ai-config.js (data/ai-config.json persistence with key redaction).
+> NX protection: NxThrottle (5 concurrent, 20/5s burst), auth mutex, 5s read cache.
+> Telegram: non-blocking AI routing, long message splitting (4000 char chunks).
+> API: SSE /api/chat endpoint, AI config CRUD, key validation.
+> Frontend: /assistant page with SSE streaming, message bubbles, typing indicators, starter questions,
+> settings page AI section (key, model, budget, enable/disable).
+> Codex review: Round 1 found 2 CRITICAL + 3 IMPORTANT + 3 MINOR. Fixed auth bootstrap deadlock,
+> chat auth bypass, GET auth headers, conversation format persistence, key clearing.
+> Round 2 found 1 IMPORTANT (trim orphaning tool messages). Fixed with turn-aware trimming.
+> Review artifacts: `reviews/phase-ai-agent-v1/`
+
+### 5.2 Write Tools + Permissions UI — COMPLETE
+> 20 write tools added (13 device management + 7 server admin) with NX protection patterns:
+> backup-before-modify [NX-04], WF-03 conflict checks [NX-02], incident awareness [NX-08],
+> AI audit JSONL logging [NX-07], server restart delay warnings [NX-09].
+> Tools: restart_analytics, toggle_analytics, unsuppress_camera, modify_camera_settings,
+> create/modify/delete_event_rule, create_bookmark, fire_trigger, acknowledge_event,
+> trigger_analytics_cycle/health_check/daily_report, restart_server, create/modify/delete_user,
+> create_db_backup, modify_site_settings, modify_analytics_engine_settings.
+> NX client: 25+ new CRUD methods (events, users, groups, layouts, storage, PTZ, triggers, backups).
+> Frontend: AI Capabilities toggle grid with 3 categories (Read/Device/Server) + preset buttons
+> (Read Only / Standard / Full Admin). Safe null-optional chaining on capabilities arrays.
+> AI events (AI_QUERY, AI_RESPONSE, AI_TOOL_CALL, AI_ERROR) forwarded to WebSocket for dashboard.
+> Codex review: Round 1 found 2 CRITICAL + 5 IMPORTANT + 2 MINOR. Fixed restart_server result check,
+> restart_analytics disable/enable result checks, modify_camera_settings previousState capture,
+> toggle_analytics incident awareness, trigger_* availability checks, capabilities UI null safety.
+> Rejected: WS auth for AI events (matches existing unauthenticated WS pattern, LAN-only).
+> Review artifacts: `reviews/phase-ai-agent-v2/`
+
+### 5.3 UX Polish + Advanced Features — COMPLETE
+> Enhanced markdown rendering: headers (h1-h3), tables, bullet/numbered lists, italic, code blocks with language labels, horizontal rules.
+> Contextual starter questions: fetches system summary to suggest relevant questions (e.g. "Why are 4 cameras offline?" when cameras are down).
+> Conversation export: Download button exports chat as timestamped .txt file.
+> get_infrastructure_summary tool [FIX-23]: single-call overview of cameras, server, incidents, analytics, workflows.
+> System prompt override: additive (appended as "ADDITIONAL OPERATOR INSTRUCTIONS"), core safety rules cannot be removed.
+> NX version detection [NX-10]: detectVersion() at startup, logged to console.
+> systemPromptOverride field in ai-config.json with settings UI.
+> Codex review: 0 CRITICAL, 4 IMPORTANT, 3 MINOR. Fixed: new-chat abort leak, streamChat EOF fallback,
+> system prompt override changed from replace to additive (safety invariant preserved).
+> Deferred: NX version in tool error messages (minor UX), span-wrapping block elements (cosmetic).
+> Review artifacts: `reviews/phase-ai-agent-v3/`

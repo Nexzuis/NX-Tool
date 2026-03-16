@@ -115,11 +115,15 @@ async function fetchWithTimeout(
   }
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, {
+async function apiFetch<T>(path: string, authenticated = false): Promise<T> {
+  const init: RequestInit = {
     // Disable Next.js caching so data is always fresh
     cache: 'no-store',
-  }, READ_TIMEOUT_MS);
+  };
+  if (authenticated) {
+    init.headers = getWriteHeaders();
+  }
+  const res = await fetchWithTimeout(`${API_BASE}${path}`, init, READ_TIMEOUT_MS);
 
   if (!res.ok) {
     if (res.status === 429) {
@@ -269,6 +273,163 @@ export async function unsuppressAll(): Promise<{ cleared: number }> {
     WRITE_TIMEOUT_MS,
   );
   if (!res.ok) throw new Error(`Unsuppress-all failed: ${res.status}`);
+  const json = await res.json();
+  return json.data ?? json;
+}
+
+// ── AI Chat (SSE streaming) [FIX-02] ─────────────────────────────────────────
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
+export interface AIConfig {
+  enabled: boolean;
+  apiKeyRedacted: string;
+  model: string;
+  maxQueriesPerHour: number;
+  monthlyBudgetCap: number;
+  estimatedMonthlySpend: number;
+  systemPromptOverride: string | null;
+  capabilities: {
+    read: string[];
+    device_management: string[];
+    server_admin: string[];
+  };
+  servers: Array<{ id: string; name: string; host: string; enabled: boolean }>;
+  telegram: { enabled: boolean };
+  web: { enabled: boolean };
+}
+
+/**
+ * Stream a chat message via SSE. Returns an AbortController to cancel.
+ */
+export function streamChat(
+  message: string,
+  sessionId: string,
+  callbacks: {
+    onToken: (text: string) => void;
+    onToolStart: (name: string) => void;
+    onToolEnd: (name: string) => void;
+    onDone: (fullMessage: string) => void;
+    onError: (message: string) => void;
+  },
+): AbortController {
+  const controller = new AbortController();
+
+  fetch(`${API_BASE}/api/chat`, {
+    method: 'POST',
+    headers: getWriteHeaders(),
+    body: JSON.stringify({ message, sessionId }),
+    signal: controller.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        let errMsg = `API error ${response.status}`;
+        try {
+          const json = JSON.parse(text);
+          errMsg = json.error?.message || errMsg;
+        } catch { /* use default */ }
+        callbacks.onError(errMsg);
+        return;
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        callbacks.onError('No response body');
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            // Skip — we parse from data lines
+            continue;
+          }
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            try {
+              const event = JSON.parse(data);
+              switch (event.type) {
+                case 'token':
+                  callbacks.onToken(event.text);
+                  break;
+                case 'tool_start':
+                  callbacks.onToolStart(event.label || event.name);
+                  break;
+                case 'tool_end':
+                  callbacks.onToolEnd(event.name);
+                  break;
+                case 'done':
+                  callbacks.onDone(event.fullMessage);
+                  break;
+                case 'error':
+                  callbacks.onError(event.message);
+                  break;
+              }
+            } catch {
+              // Skip malformed lines
+            }
+          }
+        }
+      }
+
+      // If we reach end of stream without a done event, ensure loading clears
+      callbacks.onDone('');
+    })
+    .catch((err) => {
+      if (err.name === 'AbortError') return;
+      callbacks.onError(err.message || 'Connection failed');
+    });
+
+  return controller;
+}
+
+export async function fetchChatHistory(sessionId: string): Promise<ChatMessage[]> {
+  return apiFetch<ChatMessage[]>(`/api/chat/history/${sessionId}`, true);
+}
+
+export async function clearChatHistory(sessionId: string): Promise<void> {
+  await fetchWithTimeout(`${API_BASE}/api/chat/history/${sessionId}`, {
+    method: 'DELETE',
+    headers: getWriteHeaders(),
+  }, WRITE_TIMEOUT_MS);
+}
+
+export const fetchAIConfig = (): Promise<AIConfig> =>
+  apiFetch<AIConfig>('/api/ai-config', true);
+
+export async function updateAIConfig(config: Partial<AIConfig> & { apiKey?: string; [key: string]: unknown }): Promise<AIConfig> {
+  const res = await fetchWithTimeout(`${API_BASE}/api/ai-config`, {
+    method: 'PATCH',
+    headers: getWriteHeaders(),
+    body: JSON.stringify(config),
+  }, WRITE_TIMEOUT_MS);
+  if (!res.ok) throw new Error(`AI config update failed: ${res.status}`);
+  const json = await res.json();
+  return json.data ?? json;
+}
+
+export async function validateAIKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/api/ai-config/validate-key`, {
+    method: 'POST',
+    headers: getWriteHeaders(),
+    body: JSON.stringify({ apiKey }),
+  }, WRITE_TIMEOUT_MS);
+  if (!res.ok) throw new Error(`Key validation failed: ${res.status}`);
   const json = await res.json();
   return json.data ?? json;
 }

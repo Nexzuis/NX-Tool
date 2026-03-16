@@ -482,4 +482,8 @@ function resetAllFailureCounts() {
   failureCounts.clear();
 }
 
-module.exports = { init, runCycle, start, stop, getStaleThresholdMs, resetFailureCount, resetAllFailureCounts };
+function isCycleInProgress() {
+  return cycleInProgress;
+}
+
+module.exports = { init, runCycle, start, stop, getStaleThresholdMs, resetFailureCount, resetAllFailureCounts, isCycleInProgress };
